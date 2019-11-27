@@ -26,7 +26,8 @@ func testImageBuilds(t *testing.T, when spec.G, it spec.S) {
 		Spec: ImageSpec{
 			Tag:            "some/image",
 			ServiceAccount: "some/service-account",
-			Builder: ImageBuilder{
+			Builder: corev1.ObjectReference{
+				Kind: "Builder",
 				Name: "builder-name",
 			},
 		},

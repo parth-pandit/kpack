@@ -40,14 +40,14 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 	var clients *clients
 
 	const (
-		testNamespace            = "test"
-		dockerSecret             = "docker-secret"
-		builderName              = "build-service-builder"
-		clusterBuilderName       = "cluster-builder"
-		serviceAccountName       = "image-service-account"
-		builderImage             = "cloudfoundry/cnb:bionic"
-		customBuilderName        = "custom-builder"
-		clusterCustomBuilderName = "cluster-custom-builder"
+		testNamespace        = "test"
+		dockerSecret         = "docker-secret"
+		builderName          = "build-service-builder"
+		clusterBuilderName   = "cluster-builder"
+		serviceAccountName   = "image-service-account"
+		builderImage         = "cloudfoundry/cnb:bionic"
+		customBuilderName    = "custom-builder"
+		customClusterBuilder = "custom-cluster-builder"
 	)
 
 	it.Before(func() {
@@ -60,7 +60,7 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 		err = clients.client.BuildV1alpha1().ClusterBuilders().Delete(clusterBuilderName, &metav1.DeleteOptions{})
 		require.True(t, err == nil || errors.IsNotFound(err))
 
-		err = clients.client.ExperimentalV1alpha1().CustomClusterBuilders().Delete(clusterCustomBuilderName, &metav1.DeleteOptions{})
+		err = clients.client.ExperimentalV1alpha1().CustomClusterBuilders().Delete(customClusterBuilder, &metav1.DeleteOptions{})
 		require.True(t, err == nil || errors.IsNotFound(err))
 
 		deleteNamespace(t, clients, testNamespace)
@@ -174,7 +174,7 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 
 		_, err = clients.client.ExperimentalV1alpha1().CustomClusterBuilders().Create(&experimentalV1alpha1.CustomClusterBuilder{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: clusterCustomBuilderName,
+				Name: customClusterBuilder,
 			},
 			Spec: experimentalV1alpha1.CustomClusterBuilderSpec{
 				CustomBuilderSpec: experimentalV1alpha1.CustomBuilderSpec{
@@ -284,13 +284,13 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 				},
 				Name: clusterBuilderName,
 			},
-			//"custom-cluster-builder": {
-			//	TypeMeta: metav1.TypeMeta{
-			//		Kind:       experimentalV1alpha1.CustomClusterBuilderKind,
-			//		APIVersion: "build.pivotal.io/v1alpha1",
-			//	},
-			//	Name: clusterCustomBuilderName,
-			//},
+			"custom-cluster-builder": {
+				TypeMeta: metav1.TypeMeta{
+					Kind:       experimentalV1alpha1.CustomClusterBuilderKind,
+					APIVersion: "build.pivotal.io/v1alpha1",
+				},
+				Name: customClusterBuilder,
+			},
 		}
 
 		fmt.Println("about to create images")
@@ -324,7 +324,7 @@ func testCreateImage(t *testing.T, when spec.G, it spec.S) {
 					})
 					require.NoError(t, err)
 
-					validateImageCreate(t, clients, imageTag, image.Name, testNamespace, expectedResources)
+					validateImageCreate(t, clients, image, expectedResources)
 					validateRebase(t, clients, image.Name, testNamespace)
 				})
 			}
@@ -339,7 +339,6 @@ func waitUntilReady(t *testing.T, clients *clients, objects ...kmeta.OwnerRefabl
 		gvr, _ := meta.UnsafeGuessKindToResource(ob.GetGroupVersionKind())
 
 		eventually(t, func() bool {
-			t.Logf("Waiting for %s %s to be ready", gvr.Resource, name)
 			unstructured, err := clients.dynamicClient.Resource(gvr).Namespace(namespace).Get(name, metav1.GetOptions{})
 			require.NoError(t, err)
 
@@ -348,36 +347,31 @@ func waitUntilReady(t *testing.T, clients *clients, objects ...kmeta.OwnerRefabl
 			require.NoError(t, err)
 
 			return kResource.Status.GetCondition(duckv1alpha1.ConditionReady).IsTrue()
-		}, 5*time.Second, 5*time.Minute)
+		}, 1*time.Second, 5*time.Minute)
 	}
 }
 
-func validateImageCreate(t *testing.T, clients *clients, imageTag, imageName, testNamespace string, expectedResources v1.ResourceRequirements) {
+func validateImageCreate(t *testing.T, clients *clients, image *v1alpha1.Image, expectedResources v1.ResourceRequirements) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	logTail := &bytes.Buffer{}
 	go func() {
-		err := logs.NewBuildLogsClient(clients.k8sClient).Tail(ctx, logTail, imageName, "1", testNamespace)
+		err := logs.NewBuildLogsClient(clients.k8sClient).Tail(ctx, logTail, image.Name, "1", image.Namespace)
 		require.NoError(t, err)
 	}()
 
-	t.Logf("Waiting for image '%s' to be created", imageTag)
-	eventually(t, func() bool {
-		image, err := client.BuildV1alpha1().Images(testNamespace).Get(imageName, metav1.GetOptions{})
-		require.NoError(t, err)
+	t.Logf("Waiting for image '%s' to be created", image.Spec.Tag)
+	waitUntilReady(t, clients, image)
 
-		return image.Status.GetCondition(duckv1alpha1.ConditionReady).IsTrue()
-	}, 5*time.Second, 5*time.Minute)
-
-	_, err := registry.NewGoContainerRegistryImage(imageTag, authn.DefaultKeychain)
+	_, err := registry.NewGoContainerRegistryImage(image.Spec.Tag, authn.DefaultKeychain)
 	require.NoError(t, err)
 
 	eventually(t, func() bool {
 		return strings.Contains(logTail.String(), "Build successful")
 	}, 1*time.Second, 10*time.Second)
 
-	podList, err := clients.k8sClient.CoreV1().Pods(testNamespace).List(metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("image.build.pivotal.io/image=%s", imageName),
+	podList, err := clients.k8sClient.CoreV1().Pods(image.Namespace).List(metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("image.build.pivotal.io/image=%s", image.Name),
 	})
 	require.NoError(t, err)
 

@@ -124,7 +124,7 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 
 	image = image.DeepCopy()
 	image.SetDefaults(ctx)
-	
+
 	image, err = c.reconcileImage(image)
 	if err != nil {
 		return err
